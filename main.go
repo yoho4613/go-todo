@@ -34,6 +34,7 @@ type (
 		Completed bool          `bson:"completed"`
 		CreatedAt time.Time     `bson:"createAt"`
 	}
+
 	todo struct {
 		ID        string    `json:"id"`
 		Title     string    `json:"title"`
@@ -53,6 +54,86 @@ func init() {
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	err := rnd.Template(w, http.StatusOK, []string{"static/home.tpl"}, nil)
 	checkErr(err)
+}
+
+func createTodo(w http.ResponseWriter, r *http.Request) {
+	var t todo
+
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		rnd.JSON(w, http.StatusProcessing, err)
+		return
+	}
+
+	// simple validation
+	if t.Title == "" {
+		rnd.JSON(w, http.StatusBadRequest, renderer.M{
+			"message": "The title field is requried",
+		})
+		return
+	}
+
+	// if input is okay, create a todo
+	tm := todoModel{
+		ID:        bson.NewObjectId(),
+		Title:     t.Title,
+		Completed: false,
+		CreatedAt: time.Now(),
+	}
+	if err := db.C(collectionName).Insert(&tm); err != nil {
+		rnd.JSON(w, http.StatusProcessing, renderer.M{
+			"message": "Failed to save todo",
+			"error":   err,
+		})
+		return
+	}
+
+	rnd.JSON(w, http.StatusCreated, renderer.M{
+		"message": "Todo created successfully",
+		"todo_id": tm.ID.Hex(),
+	})
+}
+
+func updateTodo(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+
+	if !bson.IsObjectIdHex(id) {
+		rnd.JSON(w, http.StatusBadRequest, renderer.M{
+			"message": "The id is invalid",
+		})
+		return
+	}
+
+	var t todo
+
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		rnd.JSON(w, http.StatusProcessing, err)
+		return
+	}
+
+	// simple validation
+	if t.Title == "" {
+		rnd.JSON(w, http.StatusBadRequest, renderer.M{
+			"message": "The title field is requried",
+		})
+		return
+	}
+
+	// if input is okay, update a todo
+	if err := db.C(collectionName).
+		Update(
+			bson.M{"_id": bson.ObjectIdHex(id)},
+			bson.M{"title": t.Title, "completed": t.Completed},
+		); err != nil {
+		rnd.JSON(w, http.StatusProcessing, renderer.M{
+			"message": "Failed to update todo",
+			"error":   err,
+		})
+		return
+	}
+
+	rnd.JSON(w, http.StatusOK, renderer.M{
+		"message": "Todo updated successfully",
+	})
 }
 
 func fetchTodos(w http.ResponseWriter, r *http.Request) {
@@ -83,43 +164,6 @@ func fetchTodos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func createTodo(w http.ResponseWriter, r *http.Request) {
-	var t todo
-
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		rnd.JSON(w, http.StatusProcessing, err)
-		return
-	}
-
-	if t.Title == "" {
-		rnd.JSON(w, http.StatusBadRequest, renderer.M{
-			"message": "The title is required",
-		})
-		return
-	}
-
-	tm := todoModel{
-		ID:        bson.NewObjectId(),
-		Title:     t.Title,
-		Completed: false,
-		CreatedAt: time.Now(),
-	}
-
-	if err := db.C(collectionName).Insert(&tm); err != nil {
-		rnd.JSON(w, http.StatusProcessing, renderer.M{
-			"message": "Failed to save todo",
-			"error":   err,
-		})
-		return
-	}
-
-	rnd.JSON(w, http.StatusCreated, renderer.M{
-		"message": "todo created successfully",
-		"todo_id": tm.ID.Hex(),
-	})
-
-}
-
 func deleteTodo(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
 
@@ -139,54 +183,18 @@ func deleteTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rnd.JSON(w, http.StatusOK, renderer.M{
-		"message": "todo deleted successfully",
+		"message": "Todo deleted successfully",
 	})
-
-}
-
-func updateTodo(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(chi.URLParam(r, "id"))
-
-	if !bson.IsObjectIdHex(id) {
-		rnd.JSON(w, http.StatusBadRequest, renderer.M{
-			"message": "The id is invalid",
-		})
-		return
-	}
-
-	var t todo
-
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		rnd.JSON(w, http.StatusProcessing, err)
-		return
-	}
-
-	if t.Title == "" {
-		rnd.JSON(w, http.StatusBadRequest, renderer.M{
-			"message": "the title field is required",
-		})
-		return
-	}
-
-	if err := db.C(collectionName).Update(
-		bson.M{"_id": bson.ObjectIdHex(id)},
-		bson.M{"title": t.Title, "completed": t.Completed},
-	); err != nil {
-		rnd.JSON(w, http.StatusProcessing, renderer.M{
-			"message": "failed to update todo",
-			"error":   err,
-		})
-		return
-	}
-
 }
 
 func main() {
 	stopChan := make(chan os.Signal)
 	signal.Notify(stopChan, os.Interrupt)
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Get("/", homeHandler)
+
 	r.Mount("/todo", todoHandlers())
 
 	srv := &http.Server{
@@ -196,6 +204,7 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
 	go func() {
 		log.Println("Listening on port ", port)
 		if err := srv.ListenAndServe(); err != nil {
@@ -224,6 +233,6 @@ func todoHandlers() http.Handler {
 
 func checkErr(err error) {
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(err) //respond with error page or message
 	}
 }
